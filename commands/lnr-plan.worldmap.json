@@ -1,0 +1,22 @@
+{
+  "_comment": "Fixed, hand-authored domain/module registry for /lnr-plan. Edited rarely -- NOT regenerated per plan. Pill order on screen follows declaration order below. Each domain's \"color\" is a deliberately chosen, fixed identity color (not auto-assigned) -- change it here only. Whenever this file changes, copy its contents verbatim into the WORLD_MAP constant in lnr-plan.template.html (see lnr-plan.md maintenance note). PLACEHOLDER DATA: replace every domain/module below with your own repo's real ones -- see SETUP.md.",
+  "domains": [
+    { "id": "core",          "name": "Core",           "color": "#cf7b52" },
+    { "id": "billing",       "name": "Billing",        "color": "#5fa876" },
+    { "id": "notifications", "name": "Notifications",  "color": "#5588c4" },
+    { "id": "internal-ops",  "name": "Internal / Ops", "color": "#4fab93" }
+  ],
+  "modules": [
+    { "id": "core.accounts",              "name": "Accounts",            "domainId": "core" },
+    { "id": "core.auth",                  "name": "Auth",                "domainId": "core" },
+
+    { "id": "billing.invoices",           "name": "Invoices",            "domainId": "billing" },
+    { "id": "billing.payments",           "name": "Payments",            "domainId": "billing" },
+
+    { "id": "notifications.email",        "name": "Email",               "domainId": "notifications" },
+    { "id": "notifications.push",         "name": "Push",                "domainId": "notifications" },
+
+    { "id": "internal-ops.migrations",       "name": "Migrations",       "domainId": "internal-ops" },
+    { "id": "internal-ops.shared-contracts", "name": "Shared contracts", "domainId": "internal-ops" }
+  ]
+}

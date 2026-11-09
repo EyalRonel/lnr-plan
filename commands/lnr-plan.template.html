@@ -1,0 +1,1297 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- Static fallback only — <title> uses raw-text parsing, so an HTML
+     comment fence inside it is literal text, not a stripped comment (it
+     would show up in the real tab title). PAGE_TITLE lives as a JS
+     PLAN DATA block below instead; the engine sets document.title from it. -->
+<title>lnr-plan</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<style>
+  :root {
+    --left-panel-width: 480px;
+    --bg: #f5f5f7;
+    --fg: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #e3e3e6;
+    --lit-fill: #e4f1e9;
+    --lit-border: #2f6f4f;
+    --changed: #b5651d;
+    --new: #1d6fb5;
+    --risk-high-bg: #fbe4e4; --risk-high-fg: #8a2222; --risk-high-border: #d98f8f;
+    --risk-med-bg: #fbeedd; --risk-med-fg: #8a5a1b; --risk-med-border: #e0b784;
+    --risk-low-bg: #eceae4; --risk-low-fg: #55524a; --risk-low-border: #c7c2b6;
+    --accent: #0071e3;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif; overflow: hidden; }
+
+  /* push panels — part of the working area (like VS Code's sidebar/panel), never
+     an overlay over content. Width animates 0 -> target; the inner wrapper keeps
+     a fixed width throughout so its contents don't reflow mid-animation, they're
+     just clipped by the collapsing outer panel. */
+  #left-panel, #right-panel { position: relative; width: 0; flex: 0 0 auto; overflow: hidden; transition: width .26s cubic-bezier(.2,.8,.2,1); }
+  #left-panel.open { width: var(--left-panel-width); }
+  #right-panel.open { width: 240px; }
+  #left-panel > .panel-inner { width: var(--left-panel-width); }
+  #right-panel > .panel-inner { width: 240px; }
+  /* dragging the handle sets --left-panel-width continuously — the width
+     transition must not fight that, or the panel lags behind the pointer. */
+  #left-panel.resizing { transition: none; }
+
+  /* ---------- left panel resize handle — a thin grab strip on the inner
+     edge, so it's always inside the panel's own clipped box (never clipped
+     itself when the panel is closed at width:0). ---------- */
+  .resize-handle { position: absolute; top: 0; right: 0; width: 6px; height: 100%; cursor: col-resize; z-index: 30; background: transparent; }
+  .resize-handle:hover, .resize-handle.dragging { background: var(--accent); opacity: .4; }
+
+  /* ---------- domain pills ---------- */
+  .domain-pill {
+    position: relative; display: block; width: 100%; text-align: left; font: inherit;
+    border: 1px solid; border-radius: 10px; padding: 10px 12px; cursor: pointer;
+    color: var(--fg); transition: transform .12s ease, box-shadow .12s ease;
+  }
+  .domain-pill:hover { transform: translateY(-1px); }
+  .domain-pill.selected { box-shadow: 0 0 0 2px var(--accent); }
+  .domain-pill .name { font-size: 13px; font-weight: 600; display: block; }
+  .domain-pill .ph-note { display: block; font-size: 10px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  .domain-pill .dot {
+    position: absolute; top: -5px; right: -5px; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--lit-border); border: 2px solid #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25);
+  }
+  .legend-note { font-size: 10.5px; line-height: 1.5; color: var(--muted); }
+  .legend-note .dot-sample { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--lit-border); margin-right: 4px; }
+
+  /* ---------- per-domain layer rows ---------- */
+  .layer-row { border: 1px solid var(--line); border-radius: 10px; padding: 12px 15px; background: #fff; }
+  .layer-row.touched { border-color: var(--lit-border); background: var(--lit-fill); }
+  .layer-row.untouched { opacity: .5; }
+  .layer-row .layer-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .layer-row .layer-name { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .layer-row.touched .layer-name { color: var(--lit-border); }
+  .layer-row .layer-empty-inline { font-size: 12.5px; color: var(--muted); }
+  .layer-row ul.layer-items { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+  .layer-row ul.layer-items .item-text { font-size: 13px; }
+  .layer-row ul.layer-items .item-desc { font-size: 11.5px; color: var(--muted); margin-top: 1px; line-height: 1.4; }
+  .layer-row ul.shared-file-list code { font: 11.5px ui-monospace, "SF Mono", monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+
+  /* ---------- open questions: question + answer card ---------- */
+  .oq-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fff; }
+  .oq-question { font-size: 12.5px; color: var(--fg); margin: 0 0 6px; }
+  /* .note-box: the viewer's own feedback — used for both open-question
+     answers and security-risk feedback. */
+  .note-box {
+    width: 100%; min-height: 48px; resize: vertical; font: inherit; font-size: 12.5px;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 8px; box-sizing: border-box;
+  }
+  .note-box:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .note-box::placeholder { color: var(--muted); }
+
+  /* ---------- reply to the viewer's own feedback/answer, from a later
+     /lnr-plan re-run — lives in the same card as the risk/question it
+     replies to. Options are selectable (radio/checkbox); picking one just
+     writes its text into the sibling .note-box, so there's one stored
+     answer, not a separate selection state. ---------- */
+  .suggestion-box {
+    margin: 8px 0; padding: 7px 10px; border-radius: 6px;
+    background: color-mix(in srgb, var(--accent) 8%, #fff);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
+  }
+  .suggestion-label { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: var(--accent); margin-bottom: 4px; }
+  .suggestion-options { display: flex; flex-direction: column; gap: 4px; }
+  .suggestion-option { display: flex; align-items: flex-start; gap: 6px; font-size: 12.5px; color: var(--fg); line-height: 1.4; cursor: pointer; }
+  .suggestion-option input { margin-top: 2px; accent-color: var(--accent); flex-shrink: 0; cursor: pointer; }
+
+  /* ---------- security risk: addressed-by-this-plan pill ---------- */
+  .addressed-pill { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: .02em; border-radius: 8px; padding: 1px 7px; white-space: nowrap; border-width: 1px; border-style: solid; }
+
+  /* ---------- reusable: impacted pill, module tags, diff cards ---------- */
+  .impacted-pill { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .03em; border-radius: 10px; padding: 2px 9px; }
+  .impacted-pill.yes { background: var(--lit-fill); color: var(--lit-border); border: 1px solid var(--lit-border); }
+  .impacted-pill.no { background: var(--risk-low-bg); color: var(--muted); border: 1px solid var(--line); }
+  #dd-layers .module-list { list-style: none; margin: 6px 0 0; padding: 0; }
+  #dd-layers .module-list li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .tag { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; white-space: nowrap; }
+  .tag.changed { background: var(--risk-med-bg); color: var(--changed); }
+  .tag.new { background: #e3f0fb; color: var(--new); }
+  .tag.dim { background: var(--risk-low-bg); color: var(--muted); }
+  .diff-card { border: 1px solid var(--line); border-radius: 10px; margin: 8px 0 2px; overflow: hidden; }
+  .diff-card .coll-name { font: 600 13px/1.4 ui-monospace, "SF Mono", monospace; padding: 8px 10px; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .diff-card .coll-name .status { font-size: 10px; font-weight: 700; text-transform: uppercase; }
+  .diff-cols { display: grid; grid-template-columns: 1fr 1fr; }
+  .diff-col { padding: 8px 10px; font: 12px/1.6 ui-monospace, "SF Mono", monospace; }
+  .diff-col.before { border-right: 1px solid var(--line); }
+  .diff-col h4 { margin: 0 0 4px; font: 600 10px/1.4 -apple-system, sans-serif; text-transform: uppercase; color: var(--muted); }
+  .diff-col ul { list-style: none; margin: 0; padding: 0; }
+  .diff-col li.added { color: var(--lit-border); }
+  .diff-col li.removed { color: var(--risk-high-fg); text-decoration: line-through; }
+  .diff-col li.changed { color: var(--changed); }
+
+  /* ---------- rendered full-plan markdown ---------- */
+  #full-plan-md h2 { font-size: 15px; margin: 18px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  #full-plan-md h3 { font-size: 13px; margin: 14px 0 4px; }
+  #full-plan-md .table-scroll { overflow-x: auto; margin: 8px 0; }
+  #full-plan-md table { border-collapse: collapse; width: 100%; min-width: max-content; font-size: 12.5px; }
+  #full-plan-md th, #full-plan-md td { border: 1px solid var(--line); padding: 5px 7px; text-align: left; }
+  #full-plan-md th { background: var(--bg); }
+  #full-plan-md code { font: 11.5px ui-monospace, "SF Mono", monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  #full-plan-md pre { background: var(--bg); padding: 8px; border-radius: 6px; overflow-x: auto; }
+  #mermaid-chain { text-align: center; overflow-x: auto; }
+  #mermaid-fullscreen-body svg { max-width: 100%; max-height: 100%; width: auto; height: auto; }
+
+  /* ---------- plan-summary panel tabs ---------- */
+  .panel-tab {
+    font: 600 12px/1 -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted);
+    padding: 10px 10px; margin-bottom: -1px; border: none; border-bottom: 2px solid transparent;
+    background: none; cursor: pointer; white-space: nowrap; display: flex; align-items: center; gap: 5px;
+  }
+  .panel-tab:hover { color: var(--fg); }
+  .panel-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+  .tab-badge {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px;
+    padding: 0 4px; border-radius: 999px; background: var(--risk-high-border); color: #fff;
+    font-size: 10px; font-weight: 700; line-height: 1;
+  }
+  .tab-badge.hidden { display: none; }
+
+  /* ---------- highlight-to-comment: floating box shown on text selection,
+     plus the rendered cards on the Comments tab ---------- */
+  #highlight-popup { width: 280px; max-width: 90vw; }
+  #highlight-popup textarea { min-height: 56px; }
+  .hc-card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fff; }
+  .hc-quote-text { font-size: 11.5px; color: var(--muted); font-style: italic; border-left: 2px solid var(--accent); padding-left: 8px; margin: 0 0 6px; line-height: 1.4; }
+  .hc-comment-text { font-size: 12.5px; color: var(--fg); margin: 0; white-space: pre-wrap; }
+  .hc-remove { font-size: 11px; color: var(--muted); background: none; border: none; cursor: pointer; padding: 0; margin-top: 6px; }
+  .hc-remove:hover { color: var(--risk-high-fg); }
+</style>
+<style type="text/tailwindcss">
+  @layer utilities {
+    .toolbar-btn { @apply inline-flex items-center justify-center w-7 h-7 rounded-md text-neutral-500 hover:bg-black/5 hover:text-neutral-900 transition-colors; }
+    .eyebrow { @apply text-[10.5px] font-semibold uppercase tracking-wide text-neutral-400; }
+  }
+</style>
+</head>
+<body class="h-screen overflow-hidden text-[14px] leading-normal">
+
+<div class="h-full flex">
+
+  <aside id="left-panel" class="open h-full bg-white border-r border-black/10">
+    <div id="left-resize-handle" class="resize-handle" title="Drag to resize"></div>
+    <div class="panel-inner h-full flex flex-col">
+      <div class="h-12 flex items-center justify-between px-4 border-b border-black/10 shrink-0">
+        <h2 class="text-[13px] font-semibold text-neutral-900 m-0 whitespace-nowrap">Plan summary</h2>
+        <button type="button" id="close-left" class="toolbar-btn" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>
+        </button>
+      </div>
+      <div id="panel-tabs" class="flex px-2 border-b border-black/10 shrink-0" role="tablist">
+        <button type="button" class="panel-tab active" data-tab="exec" role="tab">Executive summary</button>
+        <button type="button" class="panel-tab" data-tab="plan" role="tab">Full plan</button>
+        <button type="button" class="panel-tab" data-tab="risks" role="tab">Security &amp; Risks<span id="tab-badge-risks" class="tab-badge hidden"></span></button>
+        <button type="button" class="panel-tab" data-tab="questions" role="tab">Open questions<span id="tab-badge-questions" class="tab-badge hidden"></span></button>
+        <button type="button" class="panel-tab" data-tab="comments" role="tab">Comments<span id="tab-badge-comments" class="tab-badge hidden"></span></button>
+      </div>
+      <div class="flex-1 overflow-y-auto px-5 py-5">
+        <div id="tab-exec">
+          <section class="mb-5">
+            <h3 class="eyebrow mb-1.5">What &amp; why</h3>
+            <p id="es-what" class="text-[13px] leading-relaxed text-neutral-700 m-0"></p>
+          </section>
+          <section>
+            <h3 class="eyebrow mb-1.5">Impact</h3>
+            <p id="es-impact" class="text-[13px] leading-relaxed text-neutral-700 m-0"></p>
+          </section>
+        </div>
+        <div id="tab-plan" style="display:none">
+          <div id="mermaid-chain-wrap" class="relative mb-4">
+            <div id="mermaid-chain"></div>
+            <button type="button" id="mermaid-expand" class="hidden absolute top-1 right-1 toolbar-btn" title="View full screen" aria-label="View flow chart full screen">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/></svg>
+            </button>
+          </div>
+          <div id="full-plan-md" class="text-[13px] leading-relaxed text-neutral-700"></div>
+        </div>
+        <div id="tab-risks" style="display:none">
+          <ul id="risks" class="list-none m-0 p-0 flex flex-col gap-1.5"></ul>
+        </div>
+        <div id="tab-questions" style="display:none">
+          <ul id="open-questions" class="list-none m-0 p-0 flex flex-col gap-2"></ul>
+        </div>
+        <div id="tab-comments" style="display:none">
+          <ul id="highlight-comments" class="list-none m-0 p-0 flex flex-col gap-2"></ul>
+        </div>
+      </div>
+      <div id="panel-footer" class="hidden shrink-0 border-t border-black/10 px-5 py-3 flex items-center gap-2 flex-wrap">
+        <button type="button" id="oq-copy" class="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--accent)] border border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 hover:bg-[var(--accent)]/10 transition-colors">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M3 11V3a1 1 0 0 1 1-1h8"/></svg>
+          <span>Copy notes</span>
+        </button>
+        <button type="button" id="oq-conductor" class="hidden inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--accent)] border border-[var(--accent)]/40 rounded-md px-2.5 py-1.5 hover:bg-[var(--accent)]/10 transition-colors" title="Opens this issue's Conductor workspace with the notes drafted in">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 8h8m0 0-3-3m3 3-3 3"/><path d="M11 3h2v10h-2"/></svg>
+          <span>Send notes to Conductor</span>
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="h-full flex-1 min-w-0 flex flex-col">
+    <header class="h-12 flex items-center gap-3 px-4 bg-white/75 backdrop-blur-xl border-b border-black/10 shrink-0 relative z-10">
+      <div class="flex items-center gap-2 min-w-0" style="max-width: calc(50% - 70px)">
+        <button id="toggle-left" type="button" aria-label="Toggle plan summary" title="Plan summary" class="toolbar-btn shrink-0">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><line x1="6" y1="2.5" x2="6" y2="13.5"/></svg>
+        </button>
+        <span id="hdr-sub" class="text-[13px] font-semibold text-neutral-900 truncate"><!-- ▸▸ PLAN DATA: HEADER_SUB -->Plan title goes here<!-- ▸▸ END PLAN DATA --></span>
+      </div>
+      <a id="hdr-issue" href="#" target="_blank" rel="noopener" class="hidden absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 shrink-0 font-mono text-[11px] font-bold tracking-wide text-[var(--accent)] border border-[var(--accent)]/40 rounded-full px-2.5 py-1 hover:bg-[var(--accent)]/10 transition-colors whitespace-nowrap"></a>
+      <div class="flex items-center gap-2 ml-auto shrink-0">
+        <button id="approve-plan" type="button" class="hidden inline-flex items-center gap-1.5 text-[12px] font-semibold text-white bg-[var(--lit-border)] rounded-md px-3 py-1.5 hover:opacity-90 transition-opacity" title="Sends an approval prompt to this issue's Conductor workspace">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8.5l3 3L13 5"/></svg>
+          <span>Approve Plan</span>
+        </button>
+        <button id="toggle-right" type="button" aria-label="Toggle domains" title="Domains" class="toolbar-btn shrink-0">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><line x1="10" y1="2.5" x2="10" y2="13.5"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="domain-detail" class="flex-1 min-h-0 overflow-y-auto">
+      <div class="max-w-[520px] mx-auto px-8 py-10">
+        <div id="dd-head" class="flex items-baseline gap-2.5 flex-wrap mb-5">
+          <h1 id="dd-title" class="text-[22px] font-bold tracking-tight text-neutral-900 m-0"></h1>
+          <span id="dd-pill"></span>
+        </div>
+        <ul id="dd-layers" class="list-none m-0 p-0 flex flex-col gap-2.5"></ul>
+        <a id="dd-plan-link" href="#" role="button" class="inline-block mt-1 text-[13px] font-medium text-[var(--accent)] hover:underline"></a>
+      </div>
+    </main>
+  </div>
+
+  <aside id="right-panel" class="open h-full bg-white border-l border-black/10">
+    <div class="panel-inner h-full flex flex-col">
+      <div class="h-12 flex items-center justify-between px-4 border-b border-black/10 shrink-0">
+        <h2 class="text-[13px] font-semibold text-neutral-900 m-0 whitespace-nowrap">Domains</h2>
+        <button type="button" id="close-right" class="toolbar-btn" aria-label="Close">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto px-3 py-3">
+        <div id="domain-pills" class="flex flex-col gap-2"></div>
+        <p class="legend-note mt-4 px-1"><span class="dot-sample"></span>domain impacted by this change</p>
+      </div>
+    </div>
+  </aside>
+
+</div>
+
+<!-- Floating "comment on this selection" box — shown near the selection on
+     mouseup inside the plan's read-only content, see the engine's
+     highlight-to-comment section. position:fixed, placed by JS at show time. -->
+<div id="highlight-popup" class="hidden fixed z-50">
+  <div class="rounded-lg border border-black/10 bg-white shadow-lg p-3">
+    <p id="hc-quote" class="hc-quote-text"></p>
+    <textarea id="hc-input" class="note-box" placeholder="Add a comment…" rows="3"></textarea>
+    <div class="flex items-center justify-end gap-2 mt-2">
+      <button type="button" id="hc-cancel" class="text-[12px] font-semibold text-neutral-500 hover:text-neutral-800 px-2 py-1">Cancel</button>
+      <button type="button" id="hc-submit" class="text-[12px] font-semibold text-white bg-[var(--accent)] rounded-md px-3 py-1.5 hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed" disabled>Add comment</button>
+    </div>
+  </div>
+</div>
+
+<div id="mermaid-fullscreen" class="hidden fixed inset-0 z-50 bg-white flex flex-col">
+  <div class="h-12 flex items-center justify-between px-4 border-b border-black/10 shrink-0">
+    <h2 class="text-[13px] font-semibold text-neutral-900 m-0">Chain diagram</h2>
+    <button type="button" id="mermaid-fullscreen-close" class="toolbar-btn" aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4"><line x1="2" y1="2" x2="12" y2="12"/><line x1="12" y1="2" x2="2" y2="12"/></svg>
+    </button>
+  </div>
+  <div id="mermaid-fullscreen-body" class="flex-1 overflow-auto flex items-center justify-center p-6"></div>
+</div>
+
+<script>
+/* ======================================================================
+   WORLD_MAP — fixed domain/module registry. NOT per-plan data.
+   Must mirror lnr-plan.worldmap.json verbatim. Edited rarely, by hand,
+   never regenerated by a /lnr-plan run. Pill order on screen follows
+   declaration order below. Each domain's "color" is a deliberately
+   chosen, fixed identity color (not auto-assigned) — change it here only.
+
+   PLACEHOLDER DATA — replace every domain and module below with your own
+   repo's actual business domains and the modules inside each one before
+   using this command for real. See SETUP.md for a prompt that generates
+   this from your own codebase. The three domains and handful of modules
+   here exist only to show the shape (ids, names, colors, nesting); keep
+   "internal-ops" (or your equivalent) as the catch-all for cross-cutting,
+   not-really-one-domain's-own code (shared config, migrations, infra).
+   ====================================================================== */
+const WORLD_MAP = {
+  "domains": [
+    { "id": "core",         "name": "Core",           "color": "#cf7b52" },
+    { "id": "billing",      "name": "Billing",        "color": "#5fa876" },
+    { "id": "notifications","name": "Notifications",  "color": "#5588c4" },
+    { "id": "internal-ops", "name": "Internal / Ops", "color": "#4fab93" }
+  ],
+  "modules": [
+    { "id": "core.accounts",             "name": "Accounts",           "domainId": "core" },
+    { "id": "core.auth",                 "name": "Auth",               "domainId": "core" },
+
+    { "id": "billing.invoices",          "name": "Invoices",           "domainId": "billing" },
+    { "id": "billing.payments",          "name": "Payments",           "domainId": "billing" },
+
+    { "id": "notifications.email",       "name": "Email",              "domainId": "notifications" },
+    { "id": "notifications.push",        "name": "Push",               "domainId": "notifications" },
+
+    { "id": "internal-ops.migrations",      "name": "Migrations",      "domainId": "internal-ops" },
+    { "id": "internal-ops.shared-contracts","name": "Shared contracts","domainId": "internal-ops" }
+  ]
+};
+
+/* ▸▸ PLAN DATA: PAGE_TITLE
+   The browser-tab title — just the plan's short name (2-4 words), e.g.
+   "Signup Config Plan". Never include the issue id yourself: when
+   ISSUE_REF.id is set below, the engine prefixes it automatically so the
+   tab always reads "LOO-556 - <name>" consistently. */
+const PAGE_TITLE = "lnr-plan";
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: ISSUE_REF
+   The Linear issue this plan is for, if any. Set id (e.g. "LOO-537") and
+   url (the Linear issue link). Leave id "" when there's no tracked issue
+   yet — the header badge stays hidden. */
+const ISSUE_REF = { id: "", url: "" };
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: EXEC_SUMMARY
+   what: 1-2 sentence what/why. impact: 1-2 sentence blast radius. Shown on
+   the "Executive summary" tab. */
+const EXEC_SUMMARY = {
+  what: "Example: adds X so that Y.",
+  impact: "Example: touches the Billing and Notifications domains; no client changes."
+};
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: SECURITY_RISKS
+   Shown on the "Security & Risks" tab, whose badge counts this array's
+   length. ALWAYS render the tab content even when empty — if the array is
+   empty, show one item { title: "No new risks identified", severity: "low",
+   note: "" } (and no badge). Never omit or collapse this; it is the one
+   thing a CTO reader must see. severity is "high" | "medium" | "low".
+   addressed is "yes" | "no" | "partial" — whether THIS plan closes the risk
+   (not whether it's closed in general). "yes": the plan's own changes fix
+   it. "partial": the plan reduces/mitigates it but a real gap remains (say
+   which, in `note`). "no": the plan surfaces the risk but doesn't fix it
+   (e.g. it's tracked as an open question, or belongs to a different issue).
+   Required on every real risk; omit it only on the synthetic "no risks"
+   placeholder above, where it doesn't apply.
+   suggestion (optional): a reply to the viewer's own feedback on this risk,
+   from a later /lnr-plan re-run — renders in the SAME card, right under
+   `note`. Fill this in (and keep the risk in the array) when the viewer's
+   feedback asked a question or asked for your take rather than stating a
+   decision; see lnr-plan.md Step 3. */
+const SECURITY_RISKS = [];
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: OPEN_QUESTIONS
+   Shown on the "Open questions" tab, whose badge counts this array's
+   length. Each item is either a short plain-text question, e.g. "Should
+   the backfill run automatically or require manual trigger?", or
+   { text, suggestion } once you have a reply to the viewer's own answer —
+   see SECURITY_RISKS' `suggestion` above for when to use it; same rule, same
+   rendering (in the same card, under the question). Leave the array empty
+   when there are no questions — the tab then shows "No open questions." and
+   no badge. */
+const OPEN_QUESTIONS = [];
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: IMPACT
+   domains: map of domainId -> per-layer breakdown, for every domain this
+     plan touches (omit untouched domains — they get a dim pill and an
+     all-untouched detail panel). Each domain entry sets four layers —
+     ui / api / services / cloud — as { touched: true|false, items?: [...] }
+     (omit items or leave empty when touched but not worth detailing). Each
+     item is either a short plain-text string, e.g. "POST /cycles/:id/approve
+     (new)", or { text, description } when it's worth a one-line explanation
+     of what the thing does, e.g. { text: "POST /cycles/:id/approve (new)",
+     description: "Manager-only; flips status to pending_approval and
+     notifies via NotificationService." } — keep descriptions to one short
+     sentence, real behavior, not a restatement of the name.
+     Do NOT set "modules" or "schemas" here — the engine derives those two
+     layers from `modules` below and from DB_DIFF so they can never drift
+     out of sync with the data that already drives them.
+   modules: map of moduleId -> "changed" | "new" for every touched module
+     (omit untouched modules in a touched domain — they default to dim,
+     which is exactly how to show "notifications is impacted but only
+     Email, not Push"). */
+const IMPACT = {
+  domains: {},
+  modules: {}
+};
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: DB_DIFF
+   map of domainId -> array of { collection, status: "new"|"changed",
+   before: { fields:[{n,t}], indexes:[string] } | null (null for a brand
+   new collection), after: { fields:[{n,t,diff?:"added"|"changed"}],
+   indexes:[{text,diff?:"added"|"changed"}] }. Only include collections
+   this plan actually touches. */
+const DB_DIFF = {};
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: SHARED_SCHEMA_DIFF
+   map of domainId -> array of { file, summary }. `file` is the path to the
+   shared-schema file this plan changes, in whatever shared/common package
+   your repo has (e.g. "invoice.ts"); `summary` is a short plain-text
+   description (e.g. "add approvalStatus to invoiceSchema"). Most shared
+   schema files mirror one business domain's own DB schema — list those
+   changes under that domain. A handful of files are cross-cutting and
+   belong to no single domain (e.g. env/config, ids, dates, a shared domain
+   registry) — list changes to those under "internal-ops" (or your
+   equivalent) instead. Renders inside the "Models / schemas" layer, above
+   any DB_DIFF cards; either one being non-empty is enough to mark that
+   layer touched. */
+const SHARED_SCHEMA_DIFF = {};
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: CHAIN_MERMAID
+   This plan's chain diagram, mermaid flowchart source (no code fence). */
+const CHAIN_MERMAID = "flowchart LR\n  A[Client] --> B[API]";
+/* ▸▸ END PLAN DATA */
+
+/* ▸▸ PLAN DATA: FULL_PLAN_MD
+   The rest of the plan-format.md sections as markdown: Architecture
+   diagram, Endpoints, Data/schema impact, Code level (files), Client,
+   Change list, Risks and open questions, Verify. Use "## " headings so
+   each domain section can carry an id anchor matching its domainId
+   (e.g. "## Billing {#billing}") for the per-domain jump-link to work. */
+const FULL_PLAN_MD = "## Architecture diagram\n\nn/a\n";
+/* ▸▸ END PLAN DATA */
+
+/* ======================================================================
+   Engine — do not edit when filling PLAN DATA blocks above.
+   ====================================================================== */
+(function () {
+  const domainById = Object.fromEntries(WORLD_MAP.domains.map(d => [d.id, d]));
+  const modulesByDomain = {};
+  WORLD_MAP.modules.forEach(m => {
+    (modulesByDomain[m.domainId] = modulesByDomain[m.domainId] || []).push(m);
+  });
+
+  const LAYERS = [
+    { key: 'ui', label: 'UI' },
+    { key: 'api', label: 'API' },
+    { key: 'modules', label: 'Modules' },
+    { key: 'services', label: 'Services' },
+    { key: 'schemas', label: 'Models / schemas' },
+    { key: 'cloud', label: 'Cloud' }
+  ];
+
+  const isDomainImpacted = id => !!IMPACT.domains[id];
+
+  function layerState(domainId, key) {
+    if (key === 'modules') {
+      const mods = modulesByDomain[domainId] || [];
+      return { touched: mods.some(m => IMPACT.modules[m.id]) };
+    }
+    if (key === 'schemas') {
+      return { touched: (DB_DIFF[domainId] || []).length > 0 || (SHARED_SCHEMA_DIFF[domainId] || []).length > 0 };
+    }
+    const d = IMPACT.domains[domainId];
+    const layer = d && d[key];
+    return { touched: !!(layer && layer.touched), items: (layer && layer.items) || [] };
+  }
+
+  // header title + issue badge + browser-tab title. document.title is set
+  // here (not via an HTML comment fence in <title> — that doesn't work;
+  // see the comment above the <title> tag) so every plan's tab title is
+  // consistently "LOO-556 - <name>" without the author having to remember
+  // to type the id into PAGE_TITLE themselves.
+  document.title = PAGE_TITLE;
+  document.getElementById('hdr-sub').textContent = document.getElementById('hdr-sub').textContent.trim();
+  if (ISSUE_REF && ISSUE_REF.id) {
+    const issueEl = document.getElementById('hdr-issue');
+    issueEl.textContent = ISSUE_REF.id;
+    issueEl.href = ISSUE_REF.url || '#';
+    issueEl.classList.remove('hidden');
+    document.title = ISSUE_REF.id + ' - ' + PAGE_TITLE;
+
+    // "Approve Plan" — same conductor://...&linear_id=<id> mechanism as
+    // "Send notes to Conductor" (see below), but a fixed go-ahead prompt
+    // instead of the viewer's own notes. One native confirm() first: unlike
+    // the notes button, this is meant to kick off real implementation work.
+    const approveBtn = document.getElementById('approve-plan');
+    approveBtn.classList.remove('hidden');
+    approveBtn.addEventListener('click', () => {
+      if (!confirm('Send "I approve the plan, begin implementation" to the Conductor workspace for ' + ISSUE_REF.id + '?')) return;
+      const url = 'conductor://prompt=' + encodeURIComponent('I approve the plan, begin implementation.') +
+        '&linear_id=' + encodeURIComponent(ISSUE_REF.id);
+      window.location.href = url;
+      // Give the conductor:// handoff a beat to actually fire before closing —
+      // this tab's only job once approved is to hand off and get out of the
+      // way. Note: browsers only let script close a tab THEY opened; a tab
+      // the viewer navigated to directly may just ignore this, which is a
+      // browser restriction, not a bug here.
+      setTimeout(() => window.close(), 400);
+    });
+  }
+
+  // exec summary tab
+  document.getElementById('es-what').textContent = EXEC_SUMMARY.what;
+  document.getElementById('es-impact').textContent = EXEC_SUMMARY.impact;
+
+  // security & risks tab + its badge — each real risk also gets a feedback
+  // box the viewer can type into (persisted per-browser via localStorage).
+  const risksEl = document.getElementById('risks');
+  const risks = SECURITY_RISKS.length
+    ? SECURITY_RISKS
+    : [{ title: 'No new risks identified', severity: 'low', note: '' }];
+  const RISK_CLASSES = {
+    high: 'bg-[var(--risk-high-bg)] text-[var(--risk-high-fg)] border-[var(--risk-high-border)]',
+    medium: 'bg-[var(--risk-med-bg)] text-[var(--risk-med-fg)] border-[var(--risk-med-border)]',
+    low: 'bg-[var(--risk-low-bg)] text-[var(--risk-low-fg)] border-[var(--risk-low-border)]'
+  };
+  const ADDRESSED = {
+    yes: { label: 'Addressed', cls: 'bg-[var(--lit-fill)] text-[var(--lit-border)] border-[var(--lit-border)]' },
+    partial: { label: 'Partially addressed', cls: 'bg-[var(--risk-med-bg)] text-[var(--risk-med-fg)] border-[var(--risk-med-border)]' },
+    no: { label: 'Not addressed', cls: 'bg-[var(--risk-high-bg)] text-[var(--risk-high-fg)] border-[var(--risk-high-border)]' }
+  };
+  const riskStorageKey = (i) => 'lnr-plan-risk:' + location.pathname + ':' + i;
+  function riskGetFeedback(i) {
+    try { return localStorage.getItem(riskStorageKey(i)) || ''; } catch (e) { return ''; }
+  }
+  function riskSetFeedback(i, value) {
+    try { localStorage.setItem(riskStorageKey(i), value); } catch (e) {}
+  }
+
+  // Every free-text box in this plan (risk feedback, question answers, and
+  // the highlight-comment box below) commits on blur or Cmd/Ctrl+Enter, not
+  // on every keystroke — so nothing is persisted/sent until you've actually
+  // finished writing it. A picked suggestion radio/checkbox still commits
+  // immediately (see renderSuggestions' onChange) since that's already a
+  // single discrete action, not continuous typing.
+  function wireSubmitOnBlur(ta, commit) {
+    ta.addEventListener('blur', commit);
+    ta.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
+        ev.preventDefault();
+        commit();
+        ta.blur();
+      }
+    });
+  }
+
+  // Renders a suggestions box with one radio (single-pick) or checkbox
+  // (multi-pick) per option, plus an always-present "Type my own answer"
+  // choice — into `container`, feeding whatever gets picked straight into
+  // `textareaEl` (the same box the viewer can freely type/edit), so there is
+  // only ever one stored answer, not a separate parallel selection state.
+  function renderSuggestions(container, groupName, suggestions, textareaEl, onChange) {
+    if (!suggestions || !suggestions.options || !suggestions.options.length) return;
+    const mode = suggestions.mode === 'multi' ? 'multi' : 'single';
+    const inputType = mode === 'multi' ? 'checkbox' : 'radio';
+    const options = suggestions.options;
+    const MANUAL = 'Type my own answer';
+    const toLines = (v) => v.split('\n').map(s => s.trim()).filter(Boolean);
+
+    const box = document.createElement('div');
+    box.className = 'suggestion-box';
+    box.innerHTML = '<span class="suggestion-label">' + (options.length > 1 ? 'Suggestions' : 'Suggestion') + '</span>';
+    const list = document.createElement('div');
+    list.className = 'suggestion-options';
+
+    options.concat([MANUAL]).forEach((opt, oi) => {
+      const isManual = oi === options.length;
+      const id = groupName + '-' + oi;
+      const label = document.createElement('label');
+      label.className = 'suggestion-option';
+      label.htmlFor = id;
+      const input = document.createElement('input');
+      input.type = inputType;
+      input.name = groupName;
+      input.id = id;
+      const current = textareaEl.value;
+      input.checked = mode === 'single'
+        ? (isManual ? (!!current.trim() && options.indexOf(current) === -1) : current === opt)
+        : (isManual ? toLines(current).some(l => options.indexOf(l) === -1) : toLines(current).indexOf(opt) !== -1);
+      input.addEventListener('change', () => {
+        if (!isManual) {
+          if (mode === 'single') {
+            textareaEl.value = opt;
+          } else {
+            let ls = toLines(textareaEl.value);
+            ls = input.checked ? (ls.indexOf(opt) === -1 ? ls.concat([opt]) : ls) : ls.filter(l => l !== opt);
+            textareaEl.value = ls.join('\n');
+          }
+          onChange();
+        }
+        textareaEl.focus();
+      });
+      label.appendChild(input);
+      const span = document.createElement('span');
+      span.textContent = opt;
+      label.appendChild(span);
+      list.appendChild(label);
+    });
+    box.appendChild(list);
+    container.appendChild(box);
+  }
+
+  risks.forEach((r, i) => {
+    const li = document.createElement('li');
+    li.className = 'rounded-md px-2.5 py-1.5 text-[12.5px] border ' + (RISK_CLASSES[r.severity] || RISK_CLASSES.low);
+    const addressed = ADDRESSED[r.addressed];
+    const pill = addressed ? '<span class="addressed-pill ' + addressed.cls + '">' + addressed.label + '</span>' : '';
+    li.innerHTML = '<div class="flex items-center justify-between gap-2' + (r.note || pill ? ' mb-1' : '') + '"><b>' + escapeHtml(r.title) + '</b>' + pill + '</div>' +
+      (r.note ? escapeHtml(r.note) : '');
+    if (SECURITY_RISKS.length) {
+      const ta = document.createElement('textarea');
+      ta.className = 'note-box mt-2';
+      ta.placeholder = 'Your feedback…';
+      ta.value = riskGetFeedback(i);
+      wireSubmitOnBlur(ta, () => { riskSetFeedback(i, ta.value); updateFooterVisibility(); });
+      if (r.suggestions) {
+        renderSuggestions(li, 'sugg-risk-' + i, r.suggestions, ta, () => { riskSetFeedback(i, ta.value); updateFooterVisibility(); });
+      }
+      li.appendChild(ta);
+    }
+    risksEl.appendChild(li);
+  });
+  setTabBadge('risks', SECURITY_RISKS.length);
+
+  // open questions tab + its badge — each question gets an answer box the
+  // viewer can type into (persisted per-browser via localStorage).
+  const questionsEl = document.getElementById('open-questions');
+  const oqStorageKey = (i) => 'lnr-plan-oq:' + location.pathname + ':' + i;
+
+  function oqGetAnswer(i) {
+    try { return localStorage.getItem(oqStorageKey(i)) || ''; } catch (e) { return ''; }
+  }
+  function oqSetAnswer(i, value) {
+    try { localStorage.setItem(oqStorageKey(i), value); } catch (e) {}
+  }
+
+  const oqText = (q) => typeof q === 'string' ? q : q.text;
+
+  if (!OPEN_QUESTIONS.length) {
+    questionsEl.innerHTML = '<li class="text-[13px] text-neutral-500">No open questions.</li>';
+  } else {
+    OPEN_QUESTIONS.forEach((q, i) => {
+      const li = document.createElement('li');
+      li.className = 'oq-card';
+      const p = document.createElement('p');
+      p.className = 'oq-question';
+      p.textContent = (i + 1) + '. ' + oqText(q);
+      li.appendChild(p);
+      const ta = document.createElement('textarea');
+      ta.className = 'note-box';
+      ta.placeholder = 'Your answer…';
+      ta.value = oqGetAnswer(i);
+      wireSubmitOnBlur(ta, () => { oqSetAnswer(i, ta.value); updateFooterVisibility(); });
+      const suggestions = typeof q === 'object' && q.suggestions;
+      if (suggestions) {
+        renderSuggestions(li, 'sugg-oq-' + i, suggestions, ta, () => { oqSetAnswer(i, ta.value); updateFooterVisibility(); });
+      }
+      li.appendChild(ta);
+      questionsEl.appendChild(li);
+    });
+  }
+  setTabBadge('questions', OPEN_QUESTIONS.length);
+
+  // ---------- Comments tab — holds the highlight-to-comment cards (see the
+  // highlight-to-comment section below for how they're created). Unlike
+  // SECURITY_RISKS/OPEN_QUESTIONS these aren't PLAN DATA — they're a
+  // runtime, viewer-created list, so they're stored as a growing array
+  // rather than a fixed per-index slot, same per-browser localStorage
+  // persistence as the risk/question boxes above. ----------
+  const commentsStorageKey = 'lnr-plan-comments:' + location.pathname;
+  function getComments() {
+    try { return JSON.parse(localStorage.getItem(commentsStorageKey) || '[]'); } catch (e) { return []; }
+  }
+  function setComments(list) {
+    try { localStorage.setItem(commentsStorageKey, JSON.stringify(list)); } catch (e) {}
+  }
+  const commentsEl = document.getElementById('highlight-comments');
+  function renderComments() {
+    const list = getComments();
+    commentsEl.innerHTML = '';
+    if (!list.length) {
+      commentsEl.innerHTML = '<li class="text-[13px] text-neutral-500">No comments yet — select any text in the plan to add one.</li>';
+    } else {
+      list.forEach((c) => {
+        const li = document.createElement('li');
+        li.className = 'hc-card';
+        li.innerHTML = '<p class="hc-quote-text">“' + escapeHtml(c.text) + '”</p>' +
+          '<p class="hc-comment-text">' + escapeHtml(c.comment) + '</p>';
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'hc-remove';
+        rm.textContent = 'Remove';
+        rm.addEventListener('click', () => {
+          setComments(getComments().filter(x => x.id !== c.id));
+          renderComments();
+          updateFooterVisibility();
+        });
+        li.appendChild(rm);
+        commentsEl.appendChild(li);
+      });
+    }
+    setTabBadge('comments', list.length);
+  }
+  renderComments();
+
+  // panel footer — lives at the bottom of the whole panel, not inside a
+  // tab, since it now combines risk feedback, question answers AND
+  // highlight comments together. Shown only once the viewer has actually
+  // written something, so it doesn't clutter a plan nobody's annotated yet.
+  const panelFooter = document.getElementById('panel-footer');
+  function hasAnyNotes() {
+    return SECURITY_RISKS.some((_, i) => riskGetFeedback(i).trim()) ||
+      OPEN_QUESTIONS.some((_, i) => oqGetAnswer(i).trim()) ||
+      getComments().length > 0;
+  }
+  function updateFooterVisibility() {
+    panelFooter.classList.toggle('hidden', !hasAnyNotes());
+  }
+  updateFooterVisibility();
+
+  document.getElementById('oq-copy').addEventListener('click', (ev) => {
+    copyText(buildQAText(), ev.currentTarget);
+  });
+
+  // "Send to Conductor" — only when this plan is tied to a real Linear
+  // issue (linear_id needs one). conductor://...&linear_id=<id> opens that
+  // issue's EXISTING workspace (or creates one) and drafts the prompt
+  // there, so this routes to the right workspace automatically instead of
+  // the viewer having to find and paste it in by hand.
+  // https://www.conductor.build/docs/reference/deep-links
+  if (ISSUE_REF && ISSUE_REF.id) {
+    const conductorBtn = document.getElementById('oq-conductor');
+    conductorBtn.classList.remove('hidden');
+    conductorBtn.addEventListener('click', () => {
+      const url = 'conductor://prompt=' + encodeURIComponent(buildQAText()) +
+        '&linear_id=' + encodeURIComponent(ISSUE_REF.id);
+      window.location.href = url;
+    });
+  }
+
+  function buildQAText() {
+    const title = document.getElementById('hdr-sub').textContent || 'this plan';
+    // When this plan is tied to a real Linear issue, we know exactly how to
+    // regenerate it (/lnr-plan <id> writes docs/plans/<slug>-plan.html —
+    // see lnr-plan.md Step 5), so lead with an instruction to re-run it with
+    // these notes folded in, rather than just dumping raw text. With no
+    // linked issue we can't promise a deterministic re-run, so fall back to
+    // a plain heading.
+    const lines = (ISSUE_REF && ISSUE_REF.id)
+      ? ['Re-run /lnr-plan ' + ISSUE_REF.id + ' and update docs/plans/' + ISSUE_REF.id.toLowerCase() + '-plan.html — incorporate the notes below into the plan, and leave anything still marked "(no feedback)" / "(no answer yet)" open.', '']
+      : ['Notes — ' + title, ''];
+    if (SECURITY_RISKS.length) {
+      lines.push('Security & Risks');
+      SECURITY_RISKS.forEach((r, i) => {
+        lines.push((i + 1) + '. ' + r.title);
+        lines.push('Feedback: ' + (riskGetFeedback(i).trim() || '(no feedback)'));
+        lines.push('');
+      });
+    }
+    if (OPEN_QUESTIONS.length) {
+      lines.push('Open questions');
+      OPEN_QUESTIONS.forEach((q, i) => {
+        lines.push((i + 1) + '. ' + oqText(q));
+        lines.push('Answer: ' + (oqGetAnswer(i).trim() || '(no answer yet)'));
+        lines.push('');
+      });
+    }
+    const comments = getComments();
+    if (comments.length) {
+      lines.push('Comments');
+      comments.forEach((c, i) => {
+        lines.push((i + 1) + '. On: "' + c.text.replace(/\s+/g, ' ').trim() + '"');
+        lines.push('Comment: ' + c.comment);
+        lines.push('');
+      });
+    }
+    return lines.join('\n').trim() + '\n';
+  }
+  setTabBadge('questions', OPEN_QUESTIONS.length);
+
+  function copyText(text, btn) {
+    const label = btn.querySelector('span');
+    const original = label.textContent;
+    const done = (ok) => {
+      label.textContent = ok ? 'Copied!' : 'Copy failed';
+      setTimeout(() => { label.textContent = original; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => done(true), () => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+
+  function fallbackCopy(text, done) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      done(ok);
+    } catch (e) {
+      done(false);
+    }
+  }
+
+  function setTabBadge(tab, count) {
+    const el = document.getElementById('tab-badge-' + tab);
+    el.textContent = String(count);
+    el.classList.toggle('hidden', count === 0);
+  }
+
+  // panel tabs
+  const TABS = ['exec', 'plan', 'risks', 'questions', 'comments'];
+  function showTab(tab) {
+    TABS.forEach(t => {
+      document.getElementById('tab-' + t).style.display = (t === tab) ? '' : 'none';
+      document.querySelector('.panel-tab[data-tab="' + t + '"]').classList.toggle('active', t === tab);
+    });
+    if (tab === 'plan') ensureFullPlanRendered();
+  }
+  document.querySelectorAll('.panel-tab').forEach(btn => {
+    btn.addEventListener('click', () => showTab(btn.dataset.tab));
+  });
+
+  // domain pills
+  const pillsEl = document.getElementById('domain-pills');
+  WORLD_MAP.domains.forEach((d) => {
+    const impacted = isDomainImpacted(d.id);
+    const hue = d.color;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'domain-pill';
+    btn.id = 'pill-' + d.id;
+    btn.style.background = 'color-mix(in srgb, ' + hue + ' 28%, #ffffff)';
+    btn.style.borderColor = 'color-mix(in srgb, ' + hue + ' 60%, var(--line))';
+    btn.innerHTML = '<span class="name">' + escapeHtml(d.name) + '</span>' +
+      (d.placeholder ? '<span class="ph-note">no module built yet</span>' : '') +
+      (impacted ? '<span class="dot" aria-hidden="true"></span>' : '');
+    btn.addEventListener('click', () => selectDomain(d.id));
+    pillsEl.appendChild(btn);
+  });
+
+  function selectDomain(domainId) {
+    document.querySelectorAll('.domain-pill').forEach(p => p.classList.toggle('selected', p.id === 'pill-' + domainId));
+    renderDomainDetail(domainId);
+  }
+
+  function renderDomainDetail(domainId) {
+    const d = domainById[domainId];
+    const impacted = isDomainImpacted(domainId);
+    document.getElementById('dd-title').textContent = d.name;
+    document.getElementById('dd-pill').innerHTML =
+      '<span class="impacted-pill ' + (impacted ? 'yes' : 'no') + '">' + (impacted ? 'IMPACTED' : 'not impacted by this change') + '</span>';
+
+    const layersEl = document.getElementById('dd-layers');
+    layersEl.innerHTML = '';
+    LAYERS.forEach(({ key, label }) => {
+      const state = layerState(domainId, key);
+      const li = document.createElement('li');
+      li.className = 'layer-row ' + (state.touched ? 'touched' : 'untouched');
+      let inlineNote = '';   // short empty-state text — shown on the same line as the label
+      let detail = '';       // list markup — shown on its own line(s) below, only when there's real content
+      let extra = null;      // DOM nodes appended after (diff cards)
+
+      if (key === 'modules') {
+        const mods = modulesByDomain[domainId] || [];
+        if (!mods.length) {
+          inlineNote = d.placeholder ? 'No module built yet' : 'No modules on record';
+        } else {
+          detail = '<ul class="module-list">' + mods.map(m => {
+            const s = IMPACT.modules[m.id] || 'dim';
+            return '<li><span>' + escapeHtml(m.name) + '</span><span class="tag ' + s + '">' +
+              (s === 'dim' ? 'untouched' : s.toUpperCase()) + '</span></li>';
+          }).join('') + '</ul>';
+        }
+      } else if (key === 'schemas') {
+        const diffs = DB_DIFF[domainId] || [];
+        const shared = SHARED_SCHEMA_DIFF[domainId] || [];
+        if (!diffs.length && !shared.length) {
+          inlineNote = 'No schema changes';
+        } else {
+          if (shared.length) {
+            detail = '<ul class="layer-items shared-file-list">' + shared.map(s =>
+              '<li><code>packages/shared/src/' + escapeHtml(s.file) + '</code> — ' + escapeHtml(s.summary) + '</li>'
+            ).join('') + '</ul>';
+          }
+          if (diffs.length) {
+            extra = document.createElement('div');
+            diffs.forEach(c => extra.appendChild(renderDiffCard(c)));
+          }
+        }
+      } else if (state.items && state.items.length) {
+        detail = '<ul class="layer-items">' + state.items.map(it => {
+          const text = typeof it === 'string' ? it : it.text;
+          const description = typeof it === 'string' ? '' : (it.description || '');
+          return '<li><div class="item-text">' + escapeHtml(text) + '</div>' +
+            (description ? '<div class="item-desc">' + escapeHtml(description) + '</div>' : '') + '</li>';
+        }).join('') + '</ul>';
+      } else {
+        inlineNote = state.touched ? 'Touched — no details given' : 'No changes';
+      }
+
+      let body = '<div class="layer-head"><span class="layer-name">' + label + '</span>' +
+        (inlineNote ? '<span class="layer-empty-inline">' + inlineNote + '</span>' : '') + '</div>';
+      body += detail;
+
+      li.innerHTML = body;
+      if (extra) li.appendChild(extra);
+      layersEl.appendChild(li);
+    });
+
+    document.getElementById('dd-plan-link').textContent = 'Jump to this domain in the full plan →';
+    document.getElementById('dd-plan-link').onclick = (ev) => {
+      ev.preventDefault();
+      openPlanSummary(domainId);
+    };
+  }
+
+  const firstImpacted = WORLD_MAP.domains.find(d => isDomainImpacted(d.id));
+  selectDomain((firstImpacted || WORLD_MAP.domains[0]).id);
+
+  // ---------- panels — push the working area, VS Code-style. Both can be
+  // open at once; each toggles independently, nothing masks the content. ----------
+  const leftPanel = document.getElementById('left-panel');
+  const rightPanel = document.getElementById('right-panel');
+
+  function setPanel(panel, open) { panel.classList.toggle('open', open); }
+  function togglePanel(panel) { setPanel(panel, !panel.classList.contains('open')); }
+
+  document.getElementById('toggle-left').addEventListener('click', () => togglePanel(leftPanel));
+  document.getElementById('toggle-right').addEventListener('click', () => togglePanel(rightPanel));
+  document.getElementById('close-left').addEventListener('click', () => setPanel(leftPanel, false));
+  document.getElementById('close-right').addEventListener('click', () => setPanel(rightPanel, false));
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { setPanel(leftPanel, false); setPanel(rightPanel, false); }
+  });
+
+  // ---------- left panel resize — drag the handle on its right edge.
+  // Width is a CSS var (not a class-based preset like the right panel's
+  // fixed 240px) so it can take any value in between. Persisted via
+  // localStorage, NOT scoped to location.pathname like the note-taking
+  // storage above — this is a viewer UI preference that should carry over
+  // from one /lnr-plan page to the next, not restart per plan. ----------
+  const LEFT_WIDTH_MIN = 320;
+  const LEFT_WIDTH_MAX = 900;
+  const leftWidthStorageKey = 'lnr-plan-left-width';
+
+  function clampLeftWidth(px) {
+    const max = Math.max(LEFT_WIDTH_MIN, Math.min(LEFT_WIDTH_MAX, window.innerWidth - 320));
+    return Math.max(LEFT_WIDTH_MIN, Math.min(max, px));
+  }
+  function applyLeftWidth(px) {
+    const clamped = clampLeftWidth(px);
+    document.documentElement.style.setProperty('--left-panel-width', clamped + 'px');
+    return clamped;
+  }
+  (function restoreLeftWidth() {
+    let stored = null;
+    try { stored = parseInt(localStorage.getItem(leftWidthStorageKey), 10); } catch (e) {}
+    if (Number.isFinite(stored)) applyLeftWidth(stored);
+  })();
+
+  const leftResizeHandle = document.getElementById('left-resize-handle');
+  let resizingLeft = false;
+  leftResizeHandle.addEventListener('mousedown', (ev) => {
+    ev.preventDefault();
+    resizingLeft = true;
+    leftPanel.classList.add('resizing');
+    leftResizeHandle.classList.add('dragging');
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', (ev) => {
+    if (!resizingLeft) return;
+    // The panel's left edge sits at x=0 (first column in the row), so the
+    // pointer's viewport x IS the target width.
+    applyLeftWidth(ev.clientX);
+  });
+  document.addEventListener('mouseup', () => {
+    if (!resizingLeft) return;
+    resizingLeft = false;
+    leftPanel.classList.remove('resizing');
+    leftResizeHandle.classList.remove('dragging');
+    document.body.style.userSelect = '';
+    try {
+      const current = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--left-panel-width'));
+      if (Number.isFinite(current)) localStorage.setItem(leftWidthStorageKey, String(Math.round(current)));
+    } catch (e) {}
+  });
+
+  // full written plan — lazily rendered on first visit to the "Full plan" tab
+  let planRendered = false;
+  let mermaidLoaded = false;
+
+  function ensureFullPlanRendered() {
+    if (planRendered) return;
+    planRendered = true;
+    document.getElementById('full-plan-md').innerHTML = renderMarkdown(FULL_PLAN_MD);
+    ensureMermaid(() => {
+      const target = document.getElementById('mermaid-chain');
+      target.innerHTML = '<pre class="mermaid">' + CHAIN_MERMAID + '</pre>';
+      window.mermaid.run({ nodes: [target.firstChild] }).then(() => {
+        document.getElementById('mermaid-expand').classList.remove('hidden');
+      });
+    });
+  }
+
+  // full-screen flow chart — clones the already-rendered SVG (vector, so it
+  // scales cleanly) into a full-viewport overlay instead of re-rendering.
+  const mermaidFullscreen = document.getElementById('mermaid-fullscreen');
+  document.getElementById('mermaid-expand').addEventListener('click', () => {
+    const svg = document.querySelector('#mermaid-chain svg');
+    if (!svg) return;
+    const body = document.getElementById('mermaid-fullscreen-body');
+    body.innerHTML = '';
+    body.appendChild(svg.cloneNode(true));
+    mermaidFullscreen.classList.remove('hidden');
+  });
+  document.getElementById('mermaid-fullscreen-close').addEventListener('click', () => {
+    mermaidFullscreen.classList.add('hidden');
+  });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !mermaidFullscreen.classList.contains('hidden')) {
+      mermaidFullscreen.classList.add('hidden');
+    }
+  });
+
+  function openPlanSummary(scrollToDomainId) {
+    setPanel(leftPanel, true);
+    showTab('plan');
+    if (scrollToDomainId) {
+      requestAnimationFrame(() => {
+        const anchor = document.getElementById(scrollToDomainId);
+        if (anchor) anchor.scrollIntoView({ block: 'start' });
+      });
+    }
+  }
+
+  // ---------- highlight-to-comment: drag-select any text inside the plan's
+  // read-only content (main domain detail, or the exec/full-plan/risks/
+  // questions tabs), and a floating box appears near the selection to write
+  // a note about it. Deliberately scoped to those roots, not the whole
+  // document — selecting text to edit an existing note-box, or clicking a
+  // button/pill, must never trigger this. On submit the pair (selected
+  // text + comment) becomes its own card on the Comments tab (see above)
+  // and folds into buildQAText(), so it reaches Conductor with everything
+  // else. ----------
+  const COMMENTABLE_ROOTS = ['#domain-detail', '#tab-exec', '#tab-plan', '#tab-risks', '#tab-questions'];
+  const highlightPopup = document.getElementById('highlight-popup');
+  const hcQuote = document.getElementById('hc-quote');
+  const hcInput = document.getElementById('hc-input');
+  const hcSubmit = document.getElementById('hc-submit');
+  const hcCancel = document.getElementById('hc-cancel');
+  let pendingHighlightText = '';
+
+  function isWithinCommentableRoot(node) {
+    return COMMENTABLE_ROOTS.some((sel) => {
+      const root = document.querySelector(sel);
+      return root && root.contains(node);
+    });
+  }
+
+  function hideHighlightPopup() {
+    highlightPopup.classList.add('hidden');
+    hcInput.value = '';
+    hcSubmit.disabled = true;
+    pendingHighlightText = '';
+  }
+
+  document.addEventListener('mouseup', (ev) => {
+    if (highlightPopup.contains(ev.target)) return;
+    // Selecting inside an existing textarea/input is ordinary text editing,
+    // not "comment on this" — never pop up over that.
+    if (document.activeElement && ['TEXTAREA', 'INPUT'].includes(document.activeElement.tagName)) return;
+
+    const selection = window.getSelection();
+    const text = selection && selection.toString().trim();
+    if (!text || !selection.rangeCount) return;
+    if (!isWithinCommentableRoot(selection.anchorNode)) return;
+
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    pendingHighlightText = text;
+    hcQuote.textContent = '“' + (text.length > 200 ? text.slice(0, 200) + '…' : text) + '”';
+    hcInput.value = '';
+    hcSubmit.disabled = true;
+    highlightPopup.classList.remove('hidden');
+
+    const popupWidth = highlightPopup.offsetWidth || 280;
+    const popupHeight = highlightPopup.offsetHeight || 140;
+    let left = rect.left;
+    let top = rect.bottom + 8;
+    if (left + popupWidth > window.innerWidth - 8) left = window.innerWidth - popupWidth - 8;
+    if (top + popupHeight > window.innerHeight - 8) top = rect.top - popupHeight - 8;
+    highlightPopup.style.left = Math.max(8, left) + 'px';
+    highlightPopup.style.top = Math.max(8, top) + 'px';
+    hcInput.focus();
+  });
+
+  // Outside click dismisses without saving. Checked on mousedown (before any
+  // new selection starts) rather than mouseup, so starting a fresh
+  // click-drag selection elsewhere first closes this one cleanly instead of
+  // racing it.
+  document.addEventListener('mousedown', (ev) => {
+    if (!highlightPopup.classList.contains('hidden') && !highlightPopup.contains(ev.target)) {
+      hideHighlightPopup();
+    }
+  });
+
+  function submitHighlightComment() {
+    const comment = hcInput.value.trim();
+    if (!comment || !pendingHighlightText) return;
+    const list = getComments();
+    list.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2), text: pendingHighlightText, comment: comment });
+    setComments(list);
+    renderComments();
+    updateFooterVisibility();
+    hideHighlightPopup();
+    window.getSelection().removeAllRanges();
+  }
+
+  hcInput.addEventListener('input', () => { hcSubmit.disabled = !hcInput.value.trim(); });
+  hcInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') hideHighlightPopup();
+    if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && !hcSubmit.disabled) {
+      ev.preventDefault();
+      submitHighlightComment();
+    }
+  });
+  hcCancel.addEventListener('click', hideHighlightPopup);
+  hcSubmit.addEventListener('click', submitHighlightComment);
+
+  function ensureMermaid(cb) {
+    if (mermaidLoaded) return cb();
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js';
+    s.onload = () => {
+      window.mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+      mermaidLoaded = true;
+      cb();
+    };
+    document.head.appendChild(s);
+  }
+
+  function renderDiffCard(c) {
+    const card = document.createElement('div');
+    card.className = 'diff-card';
+    const head = document.createElement('div');
+    head.className = 'coll-name';
+    head.innerHTML = '<span>' + escapeHtml(c.collection) + '</span><span class="status">' + c.status + '</span>';
+    card.appendChild(head);
+    const cols = document.createElement('div');
+    cols.className = 'diff-cols';
+    cols.appendChild(renderDiffCol('before', c.before));
+    cols.appendChild(renderDiffCol('after', c.after));
+    card.appendChild(cols);
+    return card;
+  }
+
+  function renderDiffCol(which, data) {
+    const col = document.createElement('div');
+    col.className = 'diff-col ' + which;
+    const h = document.createElement('h4');
+    h.textContent = which;
+    col.appendChild(h);
+    const ul = document.createElement('ul');
+    if (!data) {
+      const li = document.createElement('li');
+      li.style.color = 'var(--muted)';
+      li.textContent = '(collection did not exist)';
+      ul.appendChild(li);
+    } else {
+      (data.fields || []).forEach(f => {
+        const li = document.createElement('li');
+        if (f.diff) li.className = f.diff;
+        li.textContent = f.n + ': ' + f.t;
+        ul.appendChild(li);
+      });
+      (data.indexes || []).forEach(ix => {
+        const li = document.createElement('li');
+        const text = typeof ix === 'string' ? ix : ix.text;
+        const diff = typeof ix === 'string' ? null : ix.diff;
+        if (diff) li.className = diff;
+        li.textContent = 'index: ' + text;
+        ul.appendChild(li);
+      });
+    }
+    col.appendChild(ul);
+    return col;
+  }
+
+  // tiny markdown renderer — headings (with {#id} anchors), tables, lists, code, bold/inline-code
+  function renderMarkdown(md) {
+    const lines = md.split('\n');
+    let html = '', inTable = false, tableRows = [], inList = null, inCode = false, codeBuf = [];
+    function flushTable() {
+      if (!tableRows.length) return;
+      const [head, , ...rows] = tableRows;
+      html += '<div class="table-scroll"><table><thead><tr>' + head.map(c => '<th>' + inline(c) + '</th>').join('') + '</tr></thead><tbody>' +
+        rows.map(r => '<tr>' + r.map(c => '<td>' + inline(c) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+      tableRows = []; inTable = false;
+    }
+    function closeList() { if (inList) { html += '</' + inList + '>'; inList = null; } }
+    function inline(s) {
+      return escapeHtml(s)
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/`(.+?)`/g, '<code>$1</code>');
+    }
+    for (const raw of lines) {
+      const line = raw;
+      if (line.trim().startsWith('```')) {
+        if (!inCode) { inCode = true; codeBuf = []; }
+        else { html += '<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>'; inCode = false; }
+        continue;
+      }
+      if (inCode) { codeBuf.push(line); continue; }
+      const h = line.match(/^(#{1,4})\s+(.+)$/);
+      if (h) {
+        closeList(); flushTable();
+        let text = h[2]; let id = '';
+        const anchorMatch = text.match(/\{#([\w-]+)\}/);
+        if (anchorMatch) { id = anchorMatch[1]; text = text.replace(anchorMatch[0], '').trim(); }
+        html += '<h' + (h[1].length + 1) + (id ? ' id="' + id + '"' : '') + '>' + inline(text) + '</h' + (h[1].length + 1) + '>';
+        continue;
+      }
+      if (/^\s*\|.*\|\s*$/.test(line)) {
+        if (/^\s*\|[\s:-]+\|\s*$/.test(line)) { inTable = true; continue; }
+        const cells = line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => c.trim());
+        tableRows.push(cells); inTable = true; continue;
+      } else if (inTable) { flushTable(); }
+      const li = line.match(/^\s*[-*]\s+(.+)$/);
+      if (li) {
+        if (inList !== 'ul') { closeList(); html += '<ul>'; inList = 'ul'; }
+        html += '<li>' + inline(li[1]) + '</li>'; continue;
+      }
+      const oli = line.match(/^\s*\d+\.\s+(.+)$/);
+      if (oli) {
+        if (inList !== 'ol') { closeList(); html += '<ol>'; inList = 'ol'; }
+        html += '<li>' + inline(oli[1]) + '</li>'; continue;
+      }
+      closeList();
+      if (line.trim() === '') continue;
+      html += '<p>' + inline(line) + '</p>';
+    }
+    closeList(); flushTable();
+    return html;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+})();
+</script>
+</body>
+</html>
